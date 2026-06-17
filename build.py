@@ -78,6 +78,7 @@ class Module:
     clean_cmd: list[str]
     build_dir: Optional[Path] = None
     env: Optional[dict[str, str]] = None
+    description: str = ""
 
 MODULES = [
     Module(
@@ -88,6 +89,7 @@ MODULES = [
         clean_cmd=["cargo", "clean"],
         build_dir=ROOT / "backend" / "target",
         env={"CARGO_TERM_COLOR": "always"},
+        description="Rust trade risk monitoring backend service",
     ),
     Module(
         name="frontend",
@@ -97,6 +99,7 @@ MODULES = [
         clean_cmd=["rm", "-rf", "node_modules", "dist"],
         build_dir=ROOT / "frontend" / "dist",
         env={"NODE_ENV": "production"},
+        description="TypeScript React frontend dashboard",
     ),
     Module(
         name="market",
@@ -105,6 +108,7 @@ MODULES = [
         build_cmd=["go", "build", "-o", "market", "."],
         clean_cmd=["rm", "-f", "market"],
         build_dir=ROOT / "market" / "market",
+        description="Go-based orderbook and market data service",
     ),
     Module(
         name="frailbox",
@@ -113,6 +117,7 @@ MODULES = [
         build_cmd=["make"],
         clean_cmd=["make", "distclean"],
         build_dir=ROOT / "frailbox" / "frailbox",
+        description="C system sandbox environment",
     ),
     Module(
         name="engine",
@@ -121,6 +126,7 @@ MODULES = [
         build_cmd=["cmake", "--build", "build"],
         clean_cmd=["rm", "-rf", "build"],
         build_dir=ROOT / "frailbox" / "engine" / "build" / "trial-engine",
+        description="C++ execution matching engine",
     ),
     Module(
         name="compliance",
@@ -129,6 +135,7 @@ MODULES = [
         build_cmd=["javac", "-d", "build", "ComplianceAuditor.java"],
         clean_cmd=["rm", "-rf", "build"],
         build_dir=ROOT / "compliance" / "build",
+        description="Java compliance auditor service",
     ),
     Module(
         name="v2-market-stream",
@@ -137,6 +144,7 @@ MODULES = [
         build_cmd=["ruby", "-c", "market_stream.rb"],
         clean_cmd=["echo", "Ruby has no build artifacts to clean"],
         build_dir=None,
+        description="Ruby market stream adapter",
     ),
     Module(
         name="nfc-scanner",
@@ -145,6 +153,7 @@ MODULES = [
         build_cmd=["luac", "-p", "scanner.lua"],
         clean_cmd=["echo", "Lua has no build artifacts to clean"],
         build_dir=None,
+        description="Lua NFC scanner logic",
     ),
     Module(
         name="openapi-haskell",
@@ -153,6 +162,7 @@ MODULES = [
         build_cmd=["ghc", "-fno-code", "Types.hs", "Server.hs", "Validate.hs", "Generate.hs"],
         clean_cmd=["rm", "-f", "*.hi", "*.o", "*.hie"],
         build_dir=None,
+        description="Haskell OpenAPI parser",
     ),
     Module(
         name="openapi-tools",
@@ -161,6 +171,7 @@ MODULES = [
         build_cmd=["luac", "-p", "openapi_diff.lua", "openapi_mock.lua", "openapi_pact.lua"],
         clean_cmd=["echo", "Nothing to clean"],
         build_dir=None,
+        description="Lua OpenAPI testing helper scripts",
     ),
 ]
 
@@ -304,7 +315,7 @@ def check_prerequisites() -> list[str]:
 def build_module(
     module: Module,
     release: bool = False,
-    verbose: bool = False,
+    verbose: int = 0,
 ) -> tuple[bool, float, str]:
 
     print(f"\n  {color('▸', Colors.CYAN)} Building {color(module.name, Colors.BOLD)} ({module.language})...")
@@ -312,6 +323,11 @@ def build_module(
     env = os.environ.copy()
     if module.env:
         env.update(module.env)
+
+    if verbose >= 2:
+        print(f"       {color('Command:', Colors.GRAY)} {' '.join(module.build_cmd if module.name != 'engine' else ['cmake', '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=...'])}")
+    if verbose >= 3:
+        print(f"       {color('Environment overrides:', Colors.GRAY)} {module.env}")
 
     start = time.time()
 
@@ -327,6 +343,7 @@ def build_module(
                     text=True,
                     timeout=120,
                     env={k: v for k, v in env.items() if k != "NODE_ENV"},
+                    shell=(sys.platform == "win32"),
                 )
                 if install_result.returncode != 0:
                     return False, time.time() - start, f"npm install failed:\n{install_result.stderr}"
@@ -345,6 +362,7 @@ def build_module(
                 text=True,
                 timeout=120,
                 env=env,
+                shell=(sys.platform == "win32"),
             )
         except subprocess.TimeoutExpired:
             return False, time.time() - start, "CMake configure TIMEOUT (120s)"
@@ -378,6 +396,7 @@ def build_module(
             text=True,
             env=env,
             timeout=300,
+            shell=(sys.platform == "win32"),
         )
     except subprocess.TimeoutExpired:
         return False, time.time() - start, "BUILD TIMEOUT (300s)"
@@ -397,7 +416,7 @@ def build_module(
 
     return success, elapsed, output
 
-def clean_module(module: Module, verbose: bool = False) -> bool:
+def clean_module(module: Module, verbose: int = 0) -> bool:
     print(f"  {color('▸', Colors.YELLOW)} Cleaning {module.name}...")
     try:
         subprocess.run(
@@ -407,6 +426,7 @@ def clean_module(module: Module, verbose: bool = False) -> bool:
             text=True,
             timeout=60,
             env=os.environ.copy(),
+            shell=(sys.platform == "win32"),
         )
         return True
     except Exception as e:
@@ -501,7 +521,7 @@ def build_diagnostic_report(
 
     decrypt_target = logd_relpaths[0] if logd_relpaths and len(logd_relpaths) == 1 else None
     if logd_relpaths and len(logd_relpaths) > 1:
-        decrypt_target = str((DIAGNOSTIC_DIR / f"build-{commit_id}.logd").relative_to(ROOT))
+        decrypt_target = (DIAGNOSTIC_DIR / f"build-{commit_id}.logd").relative_to(ROOT).as_posix()
 
     report = {
         "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -550,7 +570,11 @@ def commit_diagnostic_artifacts(paths: list[Path], commit_id: str) -> bool:
         print(f"    {color('✗', Colors.RED)} No diagnostic artifacts found to commit")
         return False
 
-    relpaths = [str(path.relative_to(ROOT)) for path in existing]
+    if shutil.which("git") is None:
+        print(f"    {color('⚠', Colors.YELLOW)} git is not installed, skipping diagnostic commit")
+        return True
+
+    relpaths = [path.relative_to(ROOT).as_posix() for path in existing]
     status = subprocess.run(
         ["git", "status", "--porcelain", "--", *relpaths],
         cwd=str(ROOT),
@@ -594,7 +618,7 @@ def commit_diagnostic_artifacts(paths: list[Path], commit_id: str) -> bool:
 
 def generate_logd(
     results: list[tuple[str, bool, float, str, Optional[str]]],
-    verbose: bool = False,
+    verbose: int = 0,
 ) -> bool:
     logd_path, metadata_path, commit_id = diagnostic_paths_for_commit()
     display_logd = logd_path.relative_to(ROOT)
@@ -704,8 +728,8 @@ def generate_logd(
 
         safe_pw = sr.stdout.strip()
         logd_files = split_diagnostic_logd(logd_path)
-        logd_relpaths = [str(path.relative_to(ROOT)) for path in logd_files]
-        decrypt_target = logd_relpaths[0] if len(logd_relpaths) == 1 else str(logd_path.relative_to(ROOT))
+        logd_relpaths = [path.relative_to(ROOT).as_posix() for path in logd_files]
+        decrypt_target = logd_relpaths[0] if len(logd_relpaths) == 1 else logd_path.relative_to(ROOT).as_posix()
         write_diagnostic_report(
             metadata_path,
             build_diagnostic_report(
@@ -777,25 +801,32 @@ def print_summary(results: list[tuple[str, bool, float, str, Optional[str]]]):
           f"{total_time:.1f}s total")
 
 def main():
+    if sys.platform == "win32":
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        except Exception:
+            pass
+
+    VERSION = "1.1.0"
     parser = argparse.ArgumentParser(
         description="Tent of Trials  -  Multi-Language Build System",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python3 build.py                    Build all modules
-  python3 build.py -m backend         Build only backend
-  python3 build.py -m frontend,market Build frontend and market
-  python3 build.py --clean            Clean all artifacts
-  python3 build.py --release          Release build (Rust only)
-  python3 build.py --verbose          Verbose output
-
-Diagnostic bundle:
-  python3 build.py
+  python3 build.py                         Build all modules (default behavior)
+  python3 build.py --target backend        Build only the backend target
+  python3 build.py -t frontend,market      Build frontend and market targets
+  python3 build.py --skip-diagnostics      Build all modules, skipping diagnostic generation
+  python3 build.py --output-dir ./dist     Build all modules and copy artifacts to ./dist
+  python3 build.py -t backend -vvv         Build backend with maximum verbosity
+  python3 build.py --clean                 Clean all build artifacts
+  python3 build.py --list-targets          List all discoverable build targets
         """,
     )
     parser.add_argument(
-        "-m", "--module",
-        help="Module(s) to build (comma-separated, or 'all')",
+        "-t", "--target", "-m", "--module",
+        help="Target(s) to build (comma-separated, or 'all')",
         default="all",
     )
     parser.add_argument(
@@ -807,12 +838,23 @@ Diagnostic bundle:
         help="Build in release mode (Rust backend)",
     )
     parser.add_argument(
-        "--verbose", "-v", action="store_true",
-        help="Show detailed build output",
+        "--verbose", "-v", action="count", default=0,
+        help="Show detailed build output (can be specified multiple times, e.g. -vvv)",
     )
     parser.add_argument(
-        "--list", action="store_true",
-        help="List available modules and exit",
+        "--skip-diagnostics", action="store_true",
+        help="Skip diagnostic generation and preflight checks",
+    )
+    parser.add_argument(
+        "--output-dir", "-o",
+        help="Custom output directory for build artifacts",
+    )
+    parser.add_argument(
+        "--version", action="version", version=f"build.py {VERSION}",
+    )
+    parser.add_argument(
+        "--list-targets", "--list", action="store_true",
+        help="List all discoverable build targets with descriptions and exit",
     )
 
     args = parser.parse_args()
@@ -821,10 +863,11 @@ Diagnostic bundle:
     print(f"  Working directory: {ROOT}")
     print()
 
-    if args.list:
-        print(f"  {color('Available modules:', Colors.BOLD)}")
+    if args.list_targets:
+        print(f"  {color('Available build targets:', Colors.BOLD)}")
         for m in MODULES:
-            print(f"    {color(m.name, Colors.CYAN)} ({m.language})")
+            desc = f" - {m.description}" if m.description else ""
+            print(f"    {color(m.name, Colors.CYAN):<25} ({m.language}){desc}")
             print(f"      dir: {m.dir.relative_to(ROOT)}")
             print(f"      build: {' '.join(m.build_cmd)}")
         return 0
@@ -840,14 +883,15 @@ Diagnostic bundle:
         print(f"  {color(msg, Colors.GRAY)}")
     else:
         print(f"  {color('✓ All prerequisites found', Colors.GREEN)}")
-    if args.module == "all":
+
+    if args.target == "all":
         selected = MODULES
     else:
-        names = [n.strip() for n in args.module.split(",")]
+        names = [n.strip() for n in args.target.split(",")]
         selected = [m for m in MODULES if m.name in names]
         not_found = set(names) - {m.name for m in MODULES}
         if not_found:
-            print(f"  {color('✗ Unknown modules:', Colors.RED)} {', '.join(not_found)}")
+            print(f"  {color('✗ Unknown targets:', Colors.RED)} {', '.join(not_found)}")
             print(f"    Available: {', '.join(m.name for m in MODULES)}")
             return 1
 
@@ -876,20 +920,24 @@ Diagnostic bundle:
         print(f"\n  {color('Clean complete.', Colors.GREEN)}")
         return 0
 
-    print(f"\n  {color('Checking encryptly diagnostics...', Colors.GRAY)}")
-    encryptly_start = time.time()
-    encryptly_ok, encryptly_message = check_encryptly_runs()
-    if not encryptly_ok:
-        elapsed = time.time() - encryptly_start
-        blocker = f"{ENCRYPTLY_BLOCKER_MESSAGE} {encryptly_message}"
-        print(f"  {color('✗ encryptly cannot run', Colors.RED)}")
-        print(f"  {color('BLOCKER:', Colors.RED)} {blocker}")
-        results = [("encryptly-preflight", False, elapsed, blocker, None)]
-        generate_logd(results, args.verbose)
-        return 1
-    print(f"  {color('✓ encryptly runs', Colors.GREEN)}")
+    diagnostics_ok = True
+    if not args.skip_diagnostics:
+        print(f"\n  {color('Checking encryptly diagnostics...', Colors.GRAY)}")
+        encryptly_start = time.time()
+        encryptly_ok, encryptly_message = check_encryptly_runs()
+        if not encryptly_ok:
+            elapsed = time.time() - encryptly_start
+            blocker = f"{ENCRYPTLY_BLOCKER_MESSAGE} {encryptly_message}"
+            print(f"  {color('✗ encryptly cannot run', Colors.RED)}")
+            print(f"  {color('BLOCKER:', Colors.RED)} {blocker}")
+            results = [("encryptly-preflight", False, elapsed, blocker, None)]
+            generate_logd(results, args.verbose)
+            return 1
+        print(f"  {color('✓ encryptly runs', Colors.GREEN)}")
+    else:
+        print(f"\n  {color('Skipping diagnostics preflight checks.', Colors.GRAY)}")
 
-    print(f"\n  {color(f'Building {len(selected)} module(s) | release={args.release}', Colors.GRAY)}")
+    print(f"\n  {color(f'Building {len(selected)} target(s) | release={args.release}', Colors.GRAY)}")
 
     results: list[tuple[str, bool, float, str, Optional[str]]] = []
 
@@ -900,9 +948,33 @@ Diagnostic bundle:
 
     print_summary(results)
 
-    diagnostics_ok = generate_logd(results, args.verbose)
+    if args.output_dir:
+        output_path = Path(args.output_dir).resolve()
+        print(f"\n  {color('Copying build artifacts to output directory...', Colors.YELLOW)}")
+        print(f"  Output directory: {output_path}")
+        for name, success, elapsed, output, binary in results:
+            if success and binary:
+                src = Path(binary)
+                if src.exists():
+                    output_path.mkdir(parents=True, exist_ok=True)
+                    dest = output_path / src.name
+                    try:
+                        if src.is_dir():
+                            if dest.exists():
+                                shutil.rmtree(dest)
+                            shutil.copytree(src, dest)
+                        else:
+                            shutil.copy2(src, dest)
+                        print(f"    {color('✓', Colors.GREEN)} Copied {name} artifact to {dest}")
+                    except Exception as e:
+                        print(f"    {color('✗', Colors.RED)} Failed to copy {name} artifact: {e}")
 
-    return 0 if diagnostics_ok and all(r[1] for r in results) else 1
+    if not args.skip_diagnostics:
+        diagnostics_ok = generate_logd(results, args.verbose)
+    else:
+        print(f"\n  {color('Skipping diagnostic packaging.', Colors.GRAY)}")
+
+    return 0 if (args.skip_diagnostics or diagnostics_ok) and all(r[1] for r in results) else 1
 
 if __name__ == "__main__":
     sys.exit(main())
